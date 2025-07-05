@@ -1,68 +1,66 @@
-
 const express = require('express');
 const multer = require('multer');
-const cors = require('cors');
-const sharp = require('sharp');
+const Jimp = require('jimp');
 const path = require('path');
 const fs = require('fs');
-const { createCanvas, loadImage } = require('canvas');
-const { getDominantColor } = require('./utils/colors');
+const cors = require('cors');
+const { generateGradientCanvas } = require('./utils/colors');
 
 const app = express();
 const upload = multer({ dest: 'uploads/' });
-const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 
 app.post('/process', upload.single('file'), async (req, res) => {
-    try {
-        const inputPath = req.file.path;
-        const outputPath = `processed/${Date.now()}.jpg`;
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ status: 'error', message: 'No file uploaded.' });
+    }
 
-        const original = sharp(inputPath);
-        const metadata = await original.metadata();
+    const image = await Jimp.read(file.path);
+    const targetWidth = 1000;
+    const targetHeight = 700;
 
-        const targetWidth = 1000;
-        const targetHeight = 700;
+    // Calcula escala para mantener aspecto
+    const scale = Math.min(targetWidth / image.bitmap.width, targetHeight / image.bitmap.height);
+    const newWidth = Math.round(image.bitmap.width * scale);
+    const newHeight = Math.round(image.bitmap.height * scale);
 
-        const left = Math.max(0, Math.floor((targetWidth - metadata.width) / 2));
-        const top = Math.max(0, Math.floor((targetHeight - metadata.height) / 2));
+    image.resize(newWidth, newHeight);
 
-        const bgColor = "#fca53d";
+    // Genera fondo con desenfoque extendido
+    const background = await generateGradientCanvas(image, targetWidth, targetHeight);
 
-        const canvas = createCanvas(targetWidth, targetHeight);
-        const ctx = canvas.getContext('2d');
+    const x = Math.floor((targetWidth - newWidth) / 2);
+    const y = Math.floor((targetHeight - newHeight) / 2);
+    background.composite(image, x, y);
 
-        const gradient = ctx.createRadialGradient(
-            targetWidth / 2, targetHeight / 2, 10,
-            targetWidth / 2, targetHeight / 2, targetWidth
-        );
-        gradient.addColorStop(0, 'rgba(0,0,0,0)');
-        gradient.addColorStop(1, bgColor);
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, targetWidth, targetHeight);
+    // Crea la carpeta 'processed' si no existe
+    const outputDir = path.join(__dirname, 'processed');
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir);
+    }
 
-        const buffer = canvas.toBuffer('image/png');
-        const base = sharp(buffer).composite([{ input: inputPath, top, left }]);
+    const outputPath = path.join(outputDir, `${Date.now()}.jpg`);
+    await background.quality(85).writeAsync(outputPath);
 
-        await base
-            .resize(targetWidth, targetHeight, { fit: 'cover' })
-            .jpeg()
-            .toFile(outputPath);
+    res.json({
+      status: 'success',
+      url: `https://${req.hostname}/processed/${path.basename(outputPath)}`
+    });
 
-        fs.unlinkSync(inputPath); // cleanup
-
-        res.json({ status: "ok", url: `https://mascora-images.onrender.com/${outputPath}` });
-    } catch (err) {
-  console.error("Error al procesar imagen:", err);
-  res.status(500).json({
-    status: "error",
-    message: "Processing failed.",
-    details: err.message // opcional
-  });
-}
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      status: 'error',
+      message: 'Processing failed.',
+      details: err.message
+    });
+  }
 });
 
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-    console.log(`Servidor corriendo en puerto ${PORT}`);
+  console.log(`Servidor corriendo en puerto ${PORT}`);
 });
