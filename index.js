@@ -1,66 +1,95 @@
 const express = require('express');
 const multer = require('multer');
-const Jimp = require('jimp');
 const path = require('path');
 const fs = require('fs');
-const cors = require('cors');
-const { generateGradientCanvas } = require('./utils/colors');
+const { createCanvas, loadImage } = require('canvas');
+const { getDominantColor, mixColors } = require('./utils/colors');
 
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+const port = process.env.PORT || 3000;
 
-app.use(cors());
+// Ruta pública para acceder a imágenes procesadas
+app.use('/processed', express.static(path.join(__dirname, 'processed')));
+
+// Configurar Multer para manejar la carga de imágenes
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
 app.post('/process', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ status: 'error', message: 'No file uploaded.' });
+  }
+
   try {
-    const file = req.file;
-    if (!file) {
-      return res.status(400).json({ status: 'error', message: 'No file uploaded.' });
+    // Crear carpeta 'processed' si no existe
+    const processedDir = path.join(__dirname, 'processed');
+    if (!fs.existsSync(processedDir)) {
+      fs.mkdirSync(processedDir);
     }
 
-    const image = await Jimp.read(file.path);
-    const targetWidth = 1000;
-    const targetHeight = 700;
+    const image = await loadImage(req.file.buffer);
 
-    // Calcula escala para mantener aspecto
-    const scale = Math.min(targetWidth / image.bitmap.width, targetHeight / image.bitmap.height);
-    const newWidth = Math.round(image.bitmap.width * scale);
-    const newHeight = Math.round(image.bitmap.height * scale);
+    const width = 1000;
+    const height = 700;
 
-    image.resize(newWidth, newHeight);
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
 
-    // Genera fondo con desenfoque extendido
-    const background = await generateGradientCanvas(image, targetWidth, targetHeight);
+    // Obtener color base y mezclar con fondo deseado
+    const dominant = getDominantColor(image);
+    const baseColor = mixColors(dominant, '#ff9e00ff');
 
-    const x = Math.floor((targetWidth - newWidth) / 2);
-    const y = Math.floor((targetHeight - newHeight) / 2);
-    background.composite(image, x, y);
+    // Crear fondo degradado desde imagen hacia color base (4 lados)
+    const blurCanvas = createCanvas(image.width, image.height);
+    const blurCtx = blurCanvas.getContext('2d');
 
-    // Crea la carpeta 'processed' si no existe
-    const outputDir = path.join(__dirname, 'processed');
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir);
-    }
+    blurCtx.drawImage(image, 0, 0, image.width, image.height);
+    const blurredImage = blurCanvas;
 
-    const outputPath = path.join(outputDir, `${Date.now()}.jpg`);
-    await background.quality(85).writeAsync(outputPath);
+    // Llenar fondo con imagen desenfocada (simulada) y luego overlay del degradado
+    ctx.drawImage(blurredImage, 0, 0, width, height);
 
-    res.json({
-      status: 'success',
-      url: `https://${req.hostname}/processed/${path.basename(outputPath)}`
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, baseColor);
+    gradient.addColorStop(1, baseColor + '00'); // Transparente
+
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    // Calcular posición para centrar la imagen original
+    const x = (width - image.width) / 2;
+    const y = (height - image.height) / 2;
+    ctx.drawImage(image, x, y);
+
+    const filename = `processed/${Date.now()}.jpg`;
+    const outPath = path.join(__dirname, filename);
+
+    const out = fs.createWriteStream(outPath);
+    const stream = canvas.createJPEGStream({ quality: 0.95 });
+
+    stream.pipe(out);
+
+    out.on('finish', () => {
+      res.json({
+        status: 'success',
+        url: `${req.protocol}://${req.get('host')}/${filename.replace(/\\/g, '/')}`,
+      });
     });
 
-  } catch (err) {
-    console.error(err);
+    out.on('error', (err) => {
+      console.error('Stream error:', err);
+      res.status(500).json({ status: 'error', message: 'Image write failed.' });
+    });
+  } catch (error) {
+    console.error('Processing error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Processing failed.',
-      details: err.message
+      details: error.message,
     });
   }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });
