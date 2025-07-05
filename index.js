@@ -54,9 +54,13 @@ app.post('/process', upload.single('file'), async (req, res) => {
 
         res.json({ status: "ok", url: `https://mascora-images.onrender.com/${outputPath}` });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ status: "error", message: "Processing failed." });
-    }
+  console.error("Error al procesar imagen:", err);
+  res.status(500).json({
+    status: "error",
+    message: "Processing failed.",
+    details: err.message // opcional
+  });
+}
 });
 
 app.listen(PORT, () => {
