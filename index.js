@@ -1,95 +1,89 @@
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
-const { createCanvas, loadImage } = require('@napi-rs/canvas');
-const { getDominantColor, mixColors } = require('./utils/colors');
+const path = require('path');
+const Jimp = require('jimp');
+const { generateGradientCanvas } = require('./utils/colors');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-// Ruta pública para acceder a imágenes procesadas
-app.use('/processed', express.static(path.join(__dirname, 'processed')));
+const upload = multer({ dest: 'uploads/' });
 
-// Configurar Multer para manejar la carga de imágenes
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+/**
+ * Extrae el color dominante promedio de una imagen.
+ */
+async function getDominantColor(image) {
+  const { r, g, b } = image.clone().resize(1, 1).bitmap.data;
+  return Jimp.rgbaToInt(r, g, b, 255);
+}
 
+/**
+ * Combina dos colores en formato hexadecimal string.
+ */
+function mixColors(hex1, hex2) {
+  const c1 = Jimp.intToRGBA(Jimp.cssColorToHex(hex1));
+  const c2 = Jimp.intToRGBA(Jimp.cssColorToHex(hex2));
+  const r = Math.round((c1.r + c2.r) / 2);
+  const g = Math.round((c1.g + c2.g) / 2);
+  const b = Math.round((c1.b + c2.b) / 2);
+  return Jimp.rgbaToInt(r, g, b, 255);
+}
+
+// Ruta principal de procesamiento
 app.post('/process', upload.single('file'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ status: 'error', message: 'No file uploaded.' });
-  }
-
   try {
-    // Crear carpeta 'processed' si no existe
-    const processedDir = path.join(__dirname, 'processed');
-    if (!fs.existsSync(processedDir)) {
-      fs.mkdirSync(processedDir);
+    if (!req.file) {
+      return res.status(400).json({ status: 'error', message: 'No file uploaded' });
     }
 
-    const image = await loadImage(req.file.buffer);
+    const imagePath = req.file.path;
+    const image = await Jimp.read(imagePath);
 
+    // Extraer colores dominantes
+    const color1 = await getDominantColor(image);
+    const color2 = await getDominantColor(image.clone().rotate(180));
+
+    // Convertir a strings hexadecimales válidos
+    const hex1 = '#' + color1.toString(16).padStart(8, '0').slice(0, 6);
+    const hex2 = '#' + color2.toString(16).padStart(8, '0').slice(0, 6);
+
+    // Combinar colores
+    const finalColor = mixColors(hex1, hex2);
+
+    // Crear fondo degradado + imagen centrada
     const width = 1000;
     const height = 700;
+    const background = await generateGradientCanvas(image, width, height);
 
-    const canvas = createCanvas(width, height);
-    const ctx = canvas.getContext('2d');
+    // Redimensionar imagen original manteniendo proporciones
+    image.scaleToFit(width * 0.8, height * 0.8);
 
-    // Obtener color base y mezclar con fondo deseado
-    const dominant = getDominantColor(image);
-    const baseColor = mixColors(dominant, '#ff9e00ff');
+    // Centrar imagen en el fondo
+    const x = (width - image.bitmap.width) / 2;
+    const y = (height - image.bitmap.height) / 2;
+    background.composite(image, x, y);
 
-    // Crear fondo degradado desde imagen hacia color base (4 lados)
-    const blurCanvas = createCanvas(image.width, image.height);
-    const blurCtx = blurCanvas.getContext('2d');
-
-    blurCtx.drawImage(image, 0, 0, image.width, image.height);
-    const blurredImage = blurCanvas;
-
-    // Llenar fondo con imagen desenfocada (simulada) y luego overlay del degradado
-    ctx.drawImage(blurredImage, 0, 0, width, height);
-
-    const gradient = ctx.createLinearGradient(0, 0, width, height);
-    gradient.addColorStop(0, baseColor);
-    gradient.addColorStop(1, baseColor + '00'); // Transparente
-
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, width, height);
-
-    // Calcular posición para centrar la imagen original
-    const x = (width - image.width) / 2;
-    const y = (height - image.height) / 2;
-    ctx.drawImage(image, x, y);
-
+    // Guardar imagen procesada
     const filename = `processed/${Date.now()}.jpg`;
-    const outPath = path.join(__dirname, filename);
+    await background.quality(85).writeAsync(filename);
 
-    const out = fs.createWriteStream(outPath);
-    const stream = canvas.createJPEGStream({ quality: 0.95 });
+    // Limpiar archivo original
+    fs.unlinkSync(imagePath);
 
-    stream.pipe(out);
+    // Devolver URL
+    const fileUrl = `${req.protocol}://${req.get('host')}/${filename}`;
+    res.json({ status: 'success', url: fileUrl });
 
-    out.on('finish', () => {
-      res.json({
-        status: 'success',
-        url: `${req.protocol}://${req.get('host')}/${filename.replace(/\\/g, '/')}`,
-      });
-    });
-
-    out.on('error', (err) => {
-      console.error('Stream error:', err);
-      res.status(500).json({ status: 'error', message: 'Image write failed.' });
-    });
   } catch (error) {
-    console.error('Processing error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Processing failed.',
-      details: error.message,
-    });
+    console.error('Error processing image:', error);
+    res.status(500).json({ status: 'error', message: 'Processing failed.', details: error.message });
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+// Servir archivos estáticos de la carpeta "processed"
+app.use('/processed', express.static(path.join(__dirname, 'processed')));
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
