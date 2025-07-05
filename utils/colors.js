@@ -1,18 +1,39 @@
 const Jimp = require('jimp');
 
 /**
- * Combina los bordes desenfocados de una imagen con un fondo degradado suave.
+ * Extrae el color dominante de una imagen Jimp
+ * @param {Jimp} image
+ * @returns {Promise<string>} color en formato hexadecimal (#RRGGBB)
+ */
+async function getDominantColor(image) {
+  const resized = image.clone().resize(1, 1);
+  const { r, g, b } = resized.bitmap.data;
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+/**
+ * Mezcla dos colores hexadecimales (formato #rrggbb) con pesos dados.
+ */
+function mixColors(color1, color2, weight = 0.5) {
+  const c1 = parseInt(color1.slice(1), 16);
+  const c2 = parseInt(color2.slice(1), 16);
+
+  const r = Math.round(((c1 >> 16) * weight + (c2 >> 16) * (1 - weight)));
+  const g = Math.round((((c1 >> 8) & 0xff) * weight + ((c2 >> 8) & 0xff) * (1 - weight)));
+  const b = Math.round(((c1 & 0xff) * weight + (c2 & 0xff) * (1 - weight)));
+
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+}
+
+/**
+ * Genera un fondo con degradado suave y superpone una imagen desenfocada.
  */
 async function generateGradientCanvas(image, width, height) {
-  // Crear un lienzo base con fondo #d7810e80 sobre #ff9e00ff
-  const baseColor = Jimp.cssColorToHex('#f09534'); // Mezcla visual resultante
+  const baseColor = Jimp.cssColorToHex('#f09534');
   const background = new Jimp(width, height, baseColor);
 
-  // Clona la imagen para desenfoque y la centra
-  const blurLayer = image.clone();
-  blurLayer.resize(width, height).blur(35); // desenfoque más fuerte para mayor fusión
+  const blurLayer = image.clone().resize(width, height).blur(35);
 
-  // Superponer la imagen desenfocada sobre el fondo base
   background.composite(blurLayer, 0, 0, {
     mode: Jimp.BLEND_OVERLAY,
     opacitySource: 1,
@@ -22,4 +43,8 @@ async function generateGradientCanvas(image, width, height) {
   return background;
 }
 
-module.exports = { generateGradientCanvas };
+module.exports = {
+  getDominantColor,
+  mixColors,
+  generateGradientCanvas
+};
